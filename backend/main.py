@@ -4,10 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from crew.crew import build_schedule
-from models import GenerateRequest
 from dotenv import load_dotenv
 import supabase
 import traceback
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -22,40 +22,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-supabase_client = supabase.create_client(
-    os.getenv("SUPABASE_URL", "https://xxxx.supabase.co"),
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
-)
+# Initialize Supabase client
+supabase_client = None
+try:
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    
+    if supabase_url and supabase_key:
+        supabase_client = supabase.create_client(supabase_url, supabase_key)
+        print("Supabase client initialized successfully")
+    else:
+        raise ValueError("Supabase credentials not found in environment variables")
+except Exception as e:
+    print(f"Failed to initialize Supabase client: {e}")
+    supabase_client = None
+
+class GenerateRequest(BaseModel):
+    user_id: str
 
 @app.get("/")
 def root():
-    return {"message": "Chronos AI Coach API – POST /generate"}
+    return {"message": "ZcheduleAI Coach API – POST /generate"}
 
 @app.post("/generate")
 def generate_schedule(req: GenerateRequest):
-    # 1️⃣ Build the AI schedule
-    schedule = build_schedule(req.dict())
-
-    # 2️⃣ Generate a deterministic user_id (UUID v5) from the email
-    user_id = uuid4()  # or later: real auth user_id
-
-    # 3️⃣ Persist (optional stub)
     try:
-        supabase_client.table("schedules").insert({
-            "user_id": str(user_id),
-            "user_profile": req.dict(),
-            "generated_schedule": schedule,
-        }).execute()
-    except Exception:
-        # swallow and log – demo only
-        pass
+        print(f"Request received for user_id: {req.user_id}")
+        
+        if supabase_client is None:
+            raise ValueError("Supabase client not initialized. Check environment variables.")
+        
+        # Fetch user profile from Supabase
+        response = supabase_client.table("user_profiles").select("*").eq("user_id", req.user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            return {"error": f"No profile found for user_id: {req.user_id}"}
+        
+        user_profile = response.data[0]
+        print(f"Found user profile for {user_profile.get('full_name', 'Unknown')}")
+        
+        # --- Log what is being exported to Crew ---
+        print("Exporting the following dictionary to Crew:")
+        for key, value in user_profile.items():
+            print(f"  {key}: {value}")
+        print("-" * 50)
+        
+        # Build schedule using Crew
+        schedule = build_schedule(user_profile)
+        return schedule
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error in generate_schedule: {error_trace}")
+        return {"error": f"Failed to generate schedule: {str(e)}"}
 
-    # 4️⃣ Return to frontend
-    return schedule
-
-@app.exception_handler(Exception)
-async def debug_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": traceback.format_exc()},
-    )
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
